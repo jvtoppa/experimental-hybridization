@@ -749,7 +749,7 @@ int main(int argc, char** argv) {
         int current_level = 0;
         auto gcis_stop = [&current_level]() mutable
         { 
-            if (current_level >= 3) return false;
+            if (current_level >= 2) return false;
             current_level++;
             return true;
         };
