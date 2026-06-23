@@ -27,6 +27,10 @@
 
 #include <algorithm>
 #include <vector>
+#include <cstdint>
+#include <cmath>
+#include <cassert>
+#include <unordered_map>
 #include "skippable_text.hpp"
 
 using namespace std;
@@ -43,9 +47,6 @@ public:
     /*
      * build new array of text positions with only text positions of pairs with
      * frequency at least min_freq
-     *
-     * if max_alphabet_size is small, build table to speed-up pair sorting.
-     * if large, falls back to highly cache-optimized sorting.
      */
     text_positions(skippable_text<itype, ctype>* T, itype min_freq) {
         
@@ -62,24 +63,24 @@ public:
             // hash to accelerate pair sorting for small alphabets
             H = vector<vector<ipair>>(maxd, vector<ipair>(maxd, {0, 0}));
         } else {
-            // Leave empty to force cache-friendly O(N log N) fallback
+            // Leave empty to force O(N) Radix sort fallback
             H = vector<vector<ipair>>(); 
         }
 
         // --- Cache-Friendly Frequency Counting ---
-        // Instead of a 2D matrix, extract all valid pairs, sort them linearly,
-        // and extract those meeting min_freq.
         vector<Element> all_pairs;
         all_pairs.reserve(T->size() - 1);
 
         for (itype i = 0; i < T->size() - 1; ++i) {
-            cpair ab = T->pair_starting_at(i);
-            if (ab != T->blank_pair() && ab != nullpair) {
-                all_pairs.push_back({ab, i});
+            if (!T->is_blank(i)) {
+                cpair ab = T->pair_starting_at(i);
+                if (ab != T->blank_pair() && ab != nullpair) {
+                    all_pairs.push_back({ab, i});
+                }
             }
         }
 
-        // Sort lexicographically by pair, then chronologically
+        // Initial constructor sort runs once
         std::sort(all_pairs.begin(), all_pairs.end());
 
         TP.clear();
@@ -137,11 +138,11 @@ public:
 
     /*
      * cluster TP[i,...,j-1] by character pairs. 
-     * Uses fast direct hash for small symbols, cache-friendly sort for large.
+     * Uses fast direct hash for small symbols, O(N) Radix sort for large.
      */
     void cluster(itype i, itype j) {
         
-        // Fallback for large alphabets: strict cache-friendly struct sorting
+        // Fallback for large alphabets: strict cache-friendly O(N) Radix Sort
         if (H.empty() || T->get_max_symbol() >= H.size()) {
             fast_sort_cluster(i, j);
             assert(is_clustered(i, j));
@@ -301,34 +302,94 @@ private:
         skippable_text<itype, ctype>* T;
     };
 
-    // Helper Struct for cache-friendly sorting
     struct Element {
         cpair p;
         itype pos;
         bool operator<(const Element& other) const {
             if (p != other.p) return p < other.p;
-            return pos < other.pos; // fallback to position ensures stability
+            return pos < other.pos;
         }
     };
 
     /*
-     * Cache-aligned sort routine. Extracts data into contiguous structs to avoid
-     * random memory access on T during the sorting comparisons.
+     * Linear time O(N) clustering using 64-bit pair packing and LSD Radix Sort.
+     * Safely filters out blanks/invalid pairs to ensure exact frequency matching.
      */
     void fast_sort_cluster(itype i, itype j) {
         if (j <= i) return;
         
         size_t len = j - i;
-        vector<Element> buffer(len);
+
+        if (sizeof(ctype) > 4) {
+            vector<Element> buffer(len);
+            for (size_t k = 0; k < len; ++k) {
+                buffer[k] = {T->pair_starting_at(TP[i + k]), TP[i + k]};
+            }
+            std::sort(buffer.begin(), buffer.end());
+            for (size_t k = 0; k < len; ++k) {
+                TP[i + k] = buffer[k].pos;
+            }
+            return;
+        }
+
+        // --- Radix Sort for 32-bit ctype ---
+        vector<uint64_t> packed_buffer(len);
+        vector<itype> pos_buffer(len);
         
+        // 1. Pack data into arrays while filtering out blanks
         for (size_t k = 0; k < len; ++k) {
-            buffer[k] = {T->pair_starting_at(TP[i + k]), TP[i + k]};
+            itype text_pos = TP[i + k];
+            
+            // CRITICAL FIX: If the position is blank, treat it strictly as nullpair
+            // to prevent dead characters from inflating real pair frequencies.
+            if (T->is_blank(text_pos)) {
+                packed_buffer[k] = ~uint64_t(0); // 0xFFFFFFFFFFFFFFFF
+            } else {
+                cpair p = T->pair_starting_at(text_pos);
+                if (p == nullpair) {
+                    packed_buffer[k] = ~uint64_t(0);
+                } else {
+                    packed_buffer[k] = (static_cast<uint64_t>(p.first) << 32) | static_cast<uint32_t>(p.second);
+                }
+            }
+            pos_buffer[k] = text_pos;
         }
         
-        std::sort(buffer.begin(), buffer.end());
+        // 2. LSD Radix Sort (Base 256 for 8 passes over 64 bits)
+        vector<uint64_t> temp_packed(len);
+        vector<itype> temp_pos(len);
         
+        for (int shift = 0; shift < 64; shift += 8) {
+            int count[256] = {0};
+            
+            // Count frequencies
+            for (size_t k = 0; k < len; ++k) {
+                count[(packed_buffer[k] >> shift) & 0xFF]++;
+            }
+            
+            // Compute offsets
+            int offset = 0;
+            for (int c = 0; c < 256; ++c) {
+                int temp = count[c];
+                count[c] = offset;
+                offset += temp;
+            }
+            
+            // Route elements
+            for (size_t k = 0; k < len; ++k) {
+                int byte = (packed_buffer[k] >> shift) & 0xFF;
+                int dest = count[byte]++;
+                temp_packed[dest] = packed_buffer[k];
+                temp_pos[dest] = pos_buffer[k];
+            }
+            
+            packed_buffer.swap(temp_packed);
+            pos_buffer.swap(temp_pos);
+        }
+        
+        // 3. Write back sorted positions to TP
         for (size_t k = 0; k < len; ++k) {
-            TP[i + k] = buffer[k].pos;
+            TP[i + k] = pos_buffer[k];
         }
     }
 
