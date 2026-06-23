@@ -10,6 +10,8 @@ project (repair)
 
 include_directories(${PROJECT_SOURCE_DIR}/internal)
 include_directories(${PROJECT_SOURCE_DIR})
+# Include the malloc_count directory so its header files can be found easily
+include_directories(${PROJECT_SOURCE_DIR}/internal/malloc_count-0.7.1)
 
 message("Building in ${CMAKE_BUILD_TYPE} mode")
 
@@ -20,9 +22,13 @@ set(CMAKE_CXX_FLAGS_DEBUG "-O0 -ggdb -g -p")
 set(CMAKE_CXX_FLAGS_RELEASE "-ggdb -Ofast -fstrict-aliasing -DNDEBUG -march=native")
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-g -ggdb -Ofast -fstrict-aliasing -march=native")
 
-# Add the extra source files here
+# Add the extra source files here (including the C file)
 add_executable(rp 
     rp.cpp 
     internal/bitvector.cpp 
     internal/gcis/gcis.cpp
+    internal/malloc_count-0.7.1/malloc_count.c
 )
+
+# malloc_count requires the system's dl library to hook memory functions on Linux/macOS
+target_link_libraries(rp ${CMAKE_DL_LIBS})

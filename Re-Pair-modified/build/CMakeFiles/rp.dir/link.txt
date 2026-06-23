@@ -1,0 +1,1 @@
+/usr/bin/c++ --std=c++23 -ggdb -Ofast -fstrict-aliasing -DNDEBUG -march=native -rdynamic CMakeFiles/rp.dir/rp.cpp.o CMakeFiles/rp.dir/internal/bitvector.cpp.o CMakeFiles/rp.dir/internal/gcis/gcis.cpp.o "CMakeFiles/rp.dir/internal/malloc_count-0.7.1/malloc_count.c.o" -o rp  -ldl 
